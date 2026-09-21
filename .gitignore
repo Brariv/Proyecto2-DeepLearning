@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.ipynb_checkpoints/
+.DS_Store
+
+# corridas de entrenamiento (pesadas): solo se versiona modelo_final/
+runs/
+videos/*.mp4
+!videos/.gitkeep
+figs/
+*.log
