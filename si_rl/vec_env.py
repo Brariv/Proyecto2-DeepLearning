@@ -13,6 +13,7 @@ actualización de la red (los subprocesos avanzan mientras la GPU entrena).
 from __future__ import annotations
 
 import multiprocessing as mp
+import os
 import sys
 from typing import Callable, Sequence
 
@@ -70,8 +71,9 @@ class DummyVecEnv:
 
 def _worker(remote, parent_remote, env_fn):
     parent_remote.close()
-    env = env_fn()
+    env = None
     try:
+        env = env_fn()
         while True:
             cmd, data = remote.recv()
             if cmd == "step":
@@ -87,11 +89,20 @@ def _worker(remote, parent_remote, env_fn):
             elif cmd == "spaces":
                 remote.send((env.observation_space, env.action_space))
             elif cmd == "close":
-                env.close()
-                remote.close()
                 break
-    except (KeyboardInterrupt, EOFError):
+    except (KeyboardInterrupt, EOFError, BrokenPipeError, ConnectionResetError):
+        # Ctrl+C (en Windows llega a todos los procesos de la consola) o el proceso principal terminó
         pass
+    finally:
+        if env is not None:
+            try:
+                env.close()
+            except Exception:
+                pass
+        try:
+            remote.close()
+        except OSError:
+            pass
 
 
 class SubprocVecEnv:
@@ -100,8 +111,10 @@ class SubprocVecEnv:
     def __init__(self, env_fns: Sequence[Callable], start_method: str | None = None):
         self.num_envs = len(env_fns)
         if start_method is None:
-            # fork es más rápido y seguro en Linux antes de inicializar torch; macOS requiere spawn
-            start_method = "fork" if sys.platform.startswith("linux") else "spawn"
+            # Linux: fork (rápido). Windows solo tiene spawn y en macOS fork no es seguro.
+            # SI_RL_START_METHOD permite forzarlo (p. ej. para probar spawn en Linux).
+            start_method = os.environ.get("SI_RL_START_METHOD") or (
+                "fork" if sys.platform.startswith("linux") else "spawn")
         ctx = mp.get_context(start_method)
         self.remotes, work_remotes = zip(*[ctx.Pipe() for _ in range(self.num_envs)])
         self.procs = []
@@ -140,18 +153,22 @@ class SubprocVecEnv:
             return
         self.closed = True
         if self.waiting:
+            # vaciar respuestas pendientes sin bloquear (algunas ya pudieron leerse antes de una interrupción)
             for r in self.remotes:
                 try:
-                    r.recv()
-                except EOFError:
+                    if r.poll(1.0):
+                        r.recv()
+                except (EOFError, OSError):
                     pass
         for r in self.remotes:
             try:
                 r.send(("close", None))
-            except (BrokenPipeError, EOFError):
+            except (EOFError, OSError):
                 pass
         for p in self.procs:
             p.join(timeout=5)
+            if p.is_alive():
+                p.terminate()
 
 
 def make_vec_env(env_fns: Sequence[Callable], subproc: bool = True):

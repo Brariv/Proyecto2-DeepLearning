@@ -18,11 +18,13 @@ mixed precision (AMP) en GPU.
 
 ```
 proyecto2/
-├── train.py              entrenamiento (presets + overrides por CLI, checkpoints, resume, eval periódica)
+├── train.py              punto de entrada del entrenamiento (el código está en si_rl/trainer.py)
 ├── evaluate.py           evaluación greedy (5 episodios) + video .mp4  [crear_entorno / ejecutar_episodio / generar_video_agente]
 ├── plot_results.py       curvas y tabla resumen de todas las iteraciones (para el informe)
-├── run_iterations.sh     secuencia sugerida de corridas
+├── run_iterations.sh     secuencia sugerida de corridas (Linux/Mac)
+├── run_iterations.ps1    la misma secuencia para Windows (PowerShell)
 ├── si_rl/
+│   ├── trainer.py        entrenamiento (presets + overrides por CLI, checkpoints, resume, eval periódica)
 │   ├── env.py            crear_entorno(): wrappers de preprocesamiento (implementación propia + AtariPreprocessing)
 │   ├── vec_env.py        entornos vectorizados por subprocesos (implementación propia)
 │   ├── replay.py         replay buffer eficiente en memoria: n-step + PER con sum-tree vectorizado
@@ -30,7 +32,7 @@ proyecto2/
 │   ├── agent.py          selección de acciones y pérdida (Huber DQN/Double, cross-entropy C51)
 │   ├── presets.py        hiperparámetros de cada iteración
 │   └── utils.py          dispositivo (cuda/mps/cpu), semillas, loggers
-├── tests/test_replay.py  pruebas del replay buffer contra una implementación de referencia
+├── tests/                pruebas del replay buffer y de las pérdidas contra implementaciones de referencia
 ├── colab/entrenar_colab.ipynb   cuaderno para Colab/Kaggle (checkpoints en Drive)
 ├── requirements.txt
 └── modelo_final/         (crear al final) best.pt del agente entregado
@@ -50,11 +52,65 @@ python tests/test_replay.py                            # debe imprimir "TODAS LA
   recurso `--device cpu`. Conecta el cargador: el Air limita la frecuencia por temperatura.
 * **Google Colab / Kaggle (GPU T4/P100)**: abre `colab/entrenar_colab.ipynb`. Colab tiene 2 vCPUs, así que la
   simulación de los entornos es el cuello de botella; aun así `rainbow_fast` corre a ~600-900 pasos/s.
-* **PC de escritorio con GPU NVIDIA (Windows/Linux)**: instala PyTorch con CUDA desde pytorch.org y el resto
-  con `pip install -r requirements.txt`. Preset recomendado: `rainbow_fast` (usa AMP automáticamente en CUDA).
-  Pon `--num-envs` ≈ núcleos de CPU y mantén `batch_size × train_count / num_envs ≈ 8` (p. ej. 8 núcleos:
-  `--num-envs 16 --batch-size 128 --train-count 1`; 16 núcleos: el preset tal cual). En Windows los subprocesos
-  arrancan con `spawn` (tarda unos segundos más); WSL2 también funciona.
+* **PC de escritorio con GPU NVIDIA**: en Windows sigue la sección 2.1. En Linux instala PyTorch con CUDA
+  desde pytorch.org antes de `pip install -r requirements.txt`. Preset recomendado: `rainbow_fast` (AMP automático
+  en CUDA). Mantén `batch_size × train_count / num_envs ≈ 8` si cambias `--num-envs`.
+
+### 2.1 Windows (PowerShell) paso a paso
+
+Todos los comandos se escriben en PowerShell. Las rutas pueden ir con `\` o con `/`.
+
+```powershell
+# 0) Revisar la GPU y el driver (la columna "CUDA Version" es la máxima que soporta el driver)
+nvidia-smi
+
+# 1) Python 3.12 y Git (si ya los tienes, sáltalo). Cierra y abre PowerShell al terminar.
+winget install -e --id Python.Python.3.12
+winget install -e --id Git.Git
+
+# 2) Descargar el proyecto
+cd $HOME\Documents
+git clone https://github.com/Brariv/Proyecto2-DeepLearning.git
+cd Proyecto2-DeepLearning
+
+# 3) Entorno virtual (si Activate.ps1 da error de "ejecución de scripts deshabilitada",
+#    corre una sola vez: Set-ExecutionPolicy -Scope CurrentUser RemoteSigned)
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+
+# 4) PyTorch con CUDA PRIMERO (si instalas requirements.txt antes, pip pone la versión sin GPU)
+pip install torch --index-url https://download.pytorch.org/whl/cu130
+#    GTX 10xx o más vieja, o "CUDA Version" menor a 13.0 en nvidia-smi: usa .../whl/cu126
+pip install -r requirements.txt
+
+# 5) Verificar
+python -c "import torch; print(torch.__version__, torch.cuda.is_available())"   # debe decir True
+python tests\test_replay.py
+python tests\test_agent.py
+
+# 6) Prueba corta de todo el flujo (1-3 minutos)
+python train.py --preset rainbow_fast --run-name prueba --total-steps 20000 --learning-starts 5000 --num-envs 8 --batch-size 64 --eval-every 10000 --save-every 10000
+python evaluate.py --checkpoint runs\prueba\last.pt --episodes 1 --video videos\prueba.mp4
+```
+
+Si en el paso 5 sale `False`, se instaló el PyTorch sin GPU: `pip uninstall -y torch` y repite el paso 4.
+Escribe los números sin guiones bajos (`10000000`, no `10_000_000`). En Windows los entornos
+corren en subprocesos creados con `spawn`: tardan unos segundos en arrancar y es normal. Para entrenamientos
+largos desactiva la suspensión del equipo (Configuración → Sistema → Energía).
+
+Entrenamiento, evaluación y video en Windows (con el entorno virtual activado):
+
+```powershell
+python train.py --preset rainbow_fast --run-name it6_rainbow_fast --total-steps 10000000
+python train.py --resume runs\it6_rainbow_fast\last.pt --run-name it6_rainbow_fast --total-steps 10000000   # reanudar
+powershell -ExecutionPolicy Bypass -File .\run_iterations.ps1                                              # todas las iteraciones
+tensorboard --logdir runs                                                   # en otra ventana; abrir http://localhost:6006
+python plot_results.py "runs/it*" --out figs
+python evaluate.py --checkpoints-dir runs\it6_rainbow_fast --episodes 10
+mkdir modelo_final; copy runs\it6_rainbow_fast\best.pt modelo_final\best.pt
+python evaluate.py --checkpoint modelo_final\best.pt --episodes 5 --video videos\agente_final.mp4
+```
 
 Requisitos: Python ≥ 3.10, `gymnasium ≥ 1.1`, `ale-py ≥ 0.11` (probado con gymnasium 1.3.0 y ale-py 0.12.1).
 

@@ -14,6 +14,7 @@ Genera en --out:
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import os
 
@@ -75,7 +76,13 @@ def main():
     p.add_argument("--window", type=int, default=50, help="ventana de la media móvil (episodios)")
     args = p.parse_args()
     os.makedirs(args.out, exist_ok=True)
-    runs = [load_run(r) for r in args.runs if os.path.isdir(r)]
+    # PowerShell/cmd no expanden comodines (runs/it*), así que se expanden aquí
+    dirs = []
+    for patron in args.runs:
+        for d in sorted(glob.glob(patron)) or [patron]:
+            if os.path.isdir(d) and d not in dirs:
+                dirs.append(d)
+    runs = [load_run(r) for r in dirs]
     runs = [r for r in runs if r["episodes"] is not None or r["eval"] is not None]
     assert runs, "no se encontraron corridas con datos"
 
