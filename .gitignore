@@ -216,3 +216,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+.DS_Store
+
+# corridas de entrenamiento (pesadas): solo se versiona modelo_final/
+runs/
+videos/*.mp4
+!videos/.gitkeep
+figs/
+*.log
