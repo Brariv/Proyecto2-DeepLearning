@@ -21,6 +21,7 @@ proyecto2/
 ├── train.py              punto de entrada del entrenamiento (el código está en si_rl/trainer.py)
 ├── evaluate.py           evaluación greedy (5 episodios) + video .mp4  [crear_entorno / ejecutar_episodio / generar_video_agente]
 ├── plot_results.py       curvas y tabla resumen de todas las iteraciones (para el informe)
+├── video_progreso.py     video del progreso: un clip por checkpoint en un solo .mp4
 ├── run_iterations.sh     secuencia sugerida de corridas (Linux/Mac)
 ├── run_iterations.ps1    la misma secuencia para Windows (PowerShell)
 ├── si_rl/
@@ -132,8 +133,14 @@ python plot_results.py runs/it* --out figs
 # COMPETENCIA: 5 episodios con política greedy + video de un episodio completo
 python evaluate.py --checkpoint modelo_final/best.pt --episodes 5 --video videos/agente_final.mp4
 
+# 5 episodios grabando CADA UNO (videos/evaluacion/episodio_<n>_seed<s>_<puntaje>pts.mp4)
+python evaluate.py --checkpoint modelo_final/best.pt --episodes 5 --video-dir videos/evaluacion
+
 # evaluar TODOS los checkpoints de una corrida (10 episodios c/u) y elegir el mejor
 python evaluate.py --checkpoints-dir runs/it6_rainbow_fast --episodes 10
+
+# video del progreso del entrenamiento (un clip rotulado por checkpoint, en un solo archivo)
+python video_progreso.py --run runs/it6_rainbow_fast --steps 500000 2500000 4500000 7500000
 ```
 
 Cada corrida deja en `runs/<run-name>/`: `config.json`, `episodes.csv` (puntaje real de cada juego durante el

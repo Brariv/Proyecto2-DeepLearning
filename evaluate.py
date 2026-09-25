@@ -10,6 +10,9 @@ Funciones (mismos nombres que el Laboratorio 5):
 Uso rápido (competencia: 5 episodios greedy + video):
     python evaluate.py --checkpoint runs/<run>/best.pt --episodes 5 --video videos/agente.mp4
 
+Grabar TODOS los episodios de la evaluación (un .mp4 por episodio, con el puntaje en el nombre):
+    python evaluate.py --checkpoint modelo_final/best.pt --episodes 5 --video-dir videos/evaluacion
+
 Evaluar todos los checkpoints de una corrida para elegir el mejor:
     python evaluate.py --checkpoints-dir runs/<run> --episodes 10
 """
@@ -105,22 +108,45 @@ def generar_video_agente(politica: PoliticaGreedy, video_path: str, seed: int | 
     return score, steps
 
 
-def evaluar(checkpoint: str, episodes: int, seed: int, device: str, epsilon: float, verbose: bool = True):
+def evaluar(checkpoint: str, episodes: int, seed: int, device: str, epsilon: float, verbose: bool = True,
+            video_dir: str | None = None, video_fps: int = 60):
+    """Juega `episodes` juegos completos (semillas seed, seed+1, ...). Devuelve (puntajes, pasos, videos).
+
+    Con video_dir, cada episodio se graba en su propio .mp4 mientras se juega: los videos son
+    exactamente los episodios evaluados, y el nombre incluye el número de episodio, la semilla y el puntaje.
+    """
     politica = cargar_agente(checkpoint, device=device, epsilon=epsilon)
-    env = crear_entorno(politica.env_config)
-    scores, lengths = [], []
+    env = None if video_dir else crear_entorno(politica.env_config)
+    scores, lengths, videos = [], [], []
     t0 = time.time()
-    for i in range(episodes):
-        s, l = ejecutar_episodio(env, politica, seed=seed + i)
-        scores.append(s)
-        lengths.append(l)
-        if verbose:
-            print(f"  episodio {i+1}/{episodes}: puntaje={s:.0f} pasos={l}")
-    env.close()
-    if verbose:
-        print(f"  media={np.mean(scores):.1f}  max={np.max(scores):.0f}  min={np.min(scores):.0f}  "
-              f"std={np.std(scores):.1f}  ({time.time()-t0:.0f}s)")
-    return scores, lengths
+    try:
+        for i in range(episodes):
+            ep_seed = seed + i
+            if video_dir:
+                tmp = os.path.join(video_dir, f"episodio_{i+1}_grabando.mp4")
+                env_ep = crear_entorno(politica.env_config, video_path=tmp, video_fps=video_fps)
+                try:
+                    s, l = ejecutar_episodio(env_ep, politica, seed=ep_seed)
+                finally:
+                    env_ep.close()  # cierra el archivo de video
+                final = os.path.join(video_dir, f"episodio_{i+1}_seed{ep_seed}_{int(s)}pts.mp4")
+                os.replace(tmp, final)
+                videos.append(final)
+            else:
+                s, l = ejecutar_episodio(env, politica, seed=ep_seed)
+            scores.append(s)
+            lengths.append(l)
+            if verbose:
+                extra = f"  -> {videos[-1]}" if video_dir else ""
+                print(f"  episodio {i+1}/{episodes}: puntaje={s:.0f} pasos={l}{extra}", flush=True)
+    finally:
+        if env is not None:
+            env.close()
+    if verbose and scores:
+        mejor = int(np.argmax(scores))
+        print(f"  media={np.mean(scores):.1f}  max={np.max(scores):.0f} (episodio {mejor+1}, seed {seed+mejor})  "
+              f"min={np.min(scores):.0f}  std={np.std(scores):.1f}  ({time.time()-t0:.0f}s)")
+    return scores, lengths, videos
 
 
 def main():
@@ -134,19 +160,24 @@ def main():
     p.add_argument("--video", default=None, help="ruta del .mp4 a generar (un episodio completo)")
     p.add_argument("--video-fps", type=int, default=60)
     p.add_argument("--video-seed", type=int, default=None, help="semilla del episodio del video (default: seed)")
+    p.add_argument("--video-dir", default=None,
+                   help="grabar TODOS los episodios evaluados en esta carpeta (un .mp4 por episodio)")
     p.add_argument("--json", default=None, help="guardar resultados en este .json")
     args = p.parse_args()
 
     if args.checkpoints_dir:
         paths = sorted(glob.glob(os.path.join(args.checkpoints_dir, "*.pt")))
         assert paths, f"no hay checkpoints en {args.checkpoints_dir}"
+        print(f"{len(paths)} checkpoints x {args.episodes} episodios. Ctrl+C detiene y muestra el ranking parcial.")
         results = []
-        for path in paths:
-            print(f"\n== {path}")
-            scores, _ = evaluar(path, args.episodes, args.seed, args.device, args.epsilon, verbose=False)
-            results.append(dict(checkpoint=path, mean=float(np.mean(scores)), max=float(np.max(scores)),
-                                min=float(np.min(scores)), std=float(np.std(scores)), scores=scores))
-            print(f"   media={results[-1]['mean']:.1f} max={results[-1]['max']:.0f} std={results[-1]['std']:.1f}")
+        try:
+            for k, path in enumerate(paths, 1):
+                print(f"\n== [{k}/{len(paths)}] {path}", flush=True)
+                scores, _, _ = evaluar(path, args.episodes, args.seed, args.device, args.epsilon, verbose=True)
+                results.append(dict(checkpoint=path, mean=float(np.mean(scores)), max=float(np.max(scores)),
+                                    min=float(np.min(scores)), std=float(np.std(scores)), scores=scores))
+        except KeyboardInterrupt:
+            print(f"\n[evaluate] interrumpido: ranking con los {len(results)} checkpoints ya evaluados.")
         results.sort(key=lambda r: r["mean"], reverse=True)
         print("\n== Ranking por media ==")
         for r in results:
@@ -158,9 +189,12 @@ def main():
 
     assert args.checkpoint, "indica --checkpoint o --checkpoints-dir"
     print(f"== Evaluando {args.checkpoint} ({args.episodes} episodios, epsilon={args.epsilon})")
-    scores, lengths = evaluar(args.checkpoint, args.episodes, args.seed, args.device, args.epsilon)
+    scores, lengths, videos = evaluar(args.checkpoint, args.episodes, args.seed, args.device, args.epsilon,
+                                      video_dir=args.video_dir, video_fps=args.video_fps)
     out = dict(checkpoint=args.checkpoint, episodes=args.episodes, seed=args.seed, epsilon=args.epsilon,
                scores=scores, lengths=lengths, mean=float(np.mean(scores)), max=float(np.max(scores)))
+    if videos:
+        out["videos"] = videos
     if args.video:
         politica = cargar_agente(args.checkpoint, device=args.device, epsilon=args.epsilon)
         vseed = args.seed if args.video_seed is None else args.video_seed
@@ -174,5 +208,4 @@ def main():
     print("\nRESUMEN:", json.dumps({k: out[k] for k in ("scores", "mean", "max")}))
 
 
-if __name__ == "__main__":
-    main()
+main()

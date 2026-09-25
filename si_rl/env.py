@@ -119,53 +119,75 @@ class ClipReward(gym.RewardWrapper):
 
 
 class VideoRecorder(gym.Wrapper):
-    """Graba cada frame crudo (210x160 RGB) del entorno base y escribe un .mp4 al cerrar.
+    """Graba cada frame crudo (210x160 RGB) del entorno base en un .mp4.
 
     Se coloca DEBAJO de AtariPreprocessing para capturar los 4 frames de cada paso del
     agente (video fluido a 60 fps, la velocidad real del Atari 2600).
-    Requiere render_mode="rgb_array" en el entorno base.
+    Los frames se escriben al archivo a medida que se generan (no se guardan en memoria),
+    así que la RAM no crece aunque el episodio dure decenas de miles de pasos.
+    El archivo queda completo al llamar a close(). Requiere render_mode="rgb_array".
     """
 
     def __init__(self, env: gym.Env, path: str, fps: int = 60):
         super().__init__(env)
         self.path = path
         self.fps = fps
-        self.frames: list[np.ndarray] = []
+        self.n_frames = 0
+        self._writer = None      # imageio (H.264)
+        self._cv_writer = None   # respaldo OpenCV (mp4v)
         self._closed = False
+
+    def _write(self, frame: np.ndarray) -> None:
+        if self._writer is None and self._cv_writer is None:
+            os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
+            try:
+                import imageio.v2 as imageio
+
+                self._writer = imageio.get_writer(
+                    self.path, fps=self.fps, codec="libx264", quality=8,
+                    pixelformat="yuv420p", macro_block_size=1,
+                )
+                self._writer.append_data(frame)
+                self.n_frames += 1
+                return
+            except Exception as exc:  # respaldo a OpenCV (mp4v)
+                print(f"[VideoRecorder] imageio/ffmpeg no disponible ({exc}); usando OpenCV.")
+                if self._writer is not None:
+                    try:
+                        self._writer.close()
+                    except Exception:
+                        pass
+                self._writer = None
+                import cv2
+
+                h, w = frame.shape[:2]
+                self._cv_writer = cv2.VideoWriter(self.path, cv2.VideoWriter_fourcc(*"mp4v"), self.fps, (w, h))
+        if self._writer is not None:
+            self._writer.append_data(frame)
+        else:
+            import cv2
+
+            self._cv_writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+        self.n_frames += 1
 
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
-        self.frames.append(self.env.render())
+        self._write(self.env.render())
         return obs, info
 
     def step(self, action):
         out = self.env.step(action)
-        self.frames.append(self.env.render())
+        self._write(self.env.render())
         return out
 
     def save(self) -> str:
-        if not self.frames:
-            return self.path
-        os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
-        try:
-            import imageio.v2 as imageio
-
-            with imageio.get_writer(
-                self.path, fps=self.fps, codec="libx264", quality=8,
-                pixelformat="yuv420p", macro_block_size=1,
-            ) as writer:
-                for f in self.frames:
-                    writer.append_data(f)
-        except Exception as exc:  # fallback a OpenCV (mp4v)
-            print(f"[VideoRecorder] imageio/ffmpeg no disponible ({exc}); usando OpenCV.")
-            import cv2
-
-            h, w = self.frames[0].shape[:2]
-            vw = cv2.VideoWriter(self.path, cv2.VideoWriter_fourcc(*"mp4v"), self.fps, (w, h))
-            for f in self.frames:
-                vw.write(cv2.cvtColor(f, cv2.COLOR_RGB2BGR))
-            vw.release()
-        print(f"[VideoRecorder] video guardado en {self.path} ({len(self.frames)} frames, {self.fps} fps)")
+        """Cierra el archivo de video (idempotente) y devuelve su ruta."""
+        if self._writer is not None:
+            self._writer.close()
+            self._writer = None
+        if self._cv_writer is not None:
+            self._cv_writer.release()
+            self._cv_writer = None
         return self.path
 
     def close(self):
